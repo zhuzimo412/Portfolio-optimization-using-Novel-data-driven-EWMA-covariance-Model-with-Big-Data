@@ -1,0 +1,209 @@
+---
+title: "Comparison"
+author: "Zimo Zhu"
+date: '2020-02-23'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+rm(list=ls())
+load("sp500.RData")
+```
+
+```{r}
+library(xts)
+colnames(prices)<-tickers
+na.sum<-apply(is.na(prices), 2, sum)
+prices<-prices[, na.sum==0]
+prices<-as.xts(prices)
+prices<-as.matrix(prices["/2020-01-01"])
+n<-nrow(prices)
+R<-prices[2:n, ]/prices[1:(n-1), ]-1
+R<-tail(R, 1750)
+```
+
+```{r}
+R.train<-head(R, 1500)
+R.test<-R
+```
+
+```{r}
+dd.alpha<-function(y){
+  alpha<-seq(0.01, 0.3, 0.01)
+  rho<-cor(y-mean(y), sign(y-mean(y)))
+  vol<-abs(y-mean(y))/rho
+  t<-length(y)
+  MSE_alpha<-rep(0, length(alpha))
+  for(a in 1:length(alpha)){
+    s<-mean(vol[1:1000])
+    error<-rep(0, t)
+    for(i in 1:t){
+      error[i]<-vol[i]-s
+      s<-alpha[a]*vol[i]+(1-alpha[a])*s
+    }
+    MSE_alpha[a]<-mean(error[-(1:1000)]^2)
+  }
+  alpha.opt<-alpha[which.min(MSE_alpha)]
+  return(alpha.opt)
+}
+```
+
+```{r}
+dd.res<-function(y, alpha, cut.t){
+  rho<-cor(y[1:cut.t]-mean(y[1:cut.t]), sign(y[1:cut.t]-mean(y[1:cut.t])))
+  vol<-abs(y-mean(y[1:cut.t]))/rho
+  s<-mean(vol[1:cut.t])
+  t<-length(y)
+  res<-y
+  fore<-rep(0, t)
+  for(i in 1:t){
+    res[i]<-(y[i]-mean(y[1:cut.t]))/s
+    fore[i]<-s
+    s<-alpha*vol[i]+(1-alpha)*s
+  }
+  return(data.frame(res, fore))
+}
+```
+
+```{r}
+alpha.opt<-apply(R.train, 2, dd.alpha)
+```
+
+```{r}
+res<-R.test
+fore.vol<-R.test
+for(j in 1:ncol(R.test)){
+  result<-dd.res(R.test[, j], alpha.opt[j], 1500)
+  res[, j]<-result[, 1]
+  fore.vol[, j]<-result[, 2]
+}
+```
+
+```{r}
+w.dd.test<-matrix(0, nrow=250, ncol=ncol(R))
+w.ma.test<-matrix(0, nrow=250, ncol=ncol(R))
+```
+
+```{r}
+mufree<-0.02/250
+res.dd<-tail(res, 1250)
+R.ma<-tail(R.test, 1250)
+vol.dd<-tail(fore.vol, 250)
+for(i in 1:250){
+  cor_mat<-cor(res.dd[i:(i+999), ])
+  sd_vect<-vol.dd[i, ]
+  cov_mat<-sd_vect%*%t(sd_vect)*cor_mat
+  mean_vect<-apply(R.ma[i:(i+999),],2, mean)
+  z<-solve(cov_mat)%*%(mean_vect-mufree)
+  w.dd.test[i, ]<-z/sum(z)
+}
+```
+
+```{r}
+for(i in 1:250){
+  cov_mat<-cov(R.ma[i:(i+999), ])
+  mean_vect<-apply(R.ma[i:(i+999),],2, mean)
+  z<-solve(cov_mat)%*%(mean_vect-mufree)
+  w.ma.test[i, ]<-z/sum(z)
+}
+```
+
+```{r}
+R.final<-tail(R.test, 250)
+R.port.dd<-rep(0, 250)
+R.port.ma<-rep(0, 250)
+for(i in 1:250){
+  R.port.dd[i]<-sum(w.dd.test[i, ]*R.final[i, ])
+  R.port.ma[i]<-sum(w.ma.test[i, ]*R.final[i, ])
+}
+mean.dd1<-mean(R.port.dd)
+mean.ma1<-mean(R.port.ma)
+sd.dd1<-sd(R.port.dd)
+sd.ma1<-sd(R.port.ma)
+mean(R.port.dd)/sd(R.port.dd)
+mean(R.port.ma)/sd(R.port.ma)
+```
+
+```{r}
+sd<-apply(R.train, 2, sd)
+ns<-c(444, 350, 300, 250)
+```
+
+```{r}
+mean.dd<-rep(0, length(ns))
+mean.ma<-rep(0, length(ns))
+sd.dd<-rep(0, length(ns))
+sd.ma<-rep(0, length(ns))
+for(n in 1:length(ns)){
+  index.sd<-order(-sd)[1:ns[n]]
+  res.t<-res.dd[,index.sd]
+  R.t<-R.ma[, index.sd]
+  fore.vol.t<-vol.dd[, index.sd]
+  w.dd.test<-matrix(0, 250, ncol(res.t))
+  w.ma.test<-matrix(0, 250, ncol(res.t))
+  for(i in 1:250){
+    mean_vect<-apply(R.t[i:(i+999), ], 2, mean)
+    cor_mat<-cor(res.t[i:(i+999), ])
+    sd_vect<-fore.vol.t[i, ]
+    cov_mat<-sd_vect%*%t(sd_vect)*cor_mat
+    if(prod(eigen(cov_mat)$value>=0)==1) print("positive definite")
+     else print("negative definite")
+    z<-solve(cov_mat)%*%(mean_vect-mufree)
+    w.dd.test[i, ]<-z/sum(z)
+  }
+  for(i in 1:250){
+    mean_vect<-apply(R.t[i:(i+999), ], 2, mean)
+    cov_mat<-cov(R.t[i:(i+999), ])
+    z<-solve(cov_mat)%*%(mean_vect-mufree)
+    w.ma.test[i, ]<-z/sum(z)
+  }
+  R.final.t<-tail(R.test, 250)[, index.sd]
+  R.port.dd<-rep(0, 250)
+  R.port.ma<-rep(0, 250)
+  for(i in 1:250){
+    R.port.dd[i]<-sum(w.dd.test[i, ]*R.final.t[i, ])
+    R.port.ma[i]<-sum(w.ma.test[i, ]*R.final.t[i, ])
+  }
+  mean.dd[n]<-mean(R.port.dd)
+  mean.ma[n]<-mean(R.port.ma)
+  sd.dd[n]<-sd(R.port.dd)
+  sd.ma[n]<-sd(R.port.ma)
+}
+mean.dd/sd.dd; mean.ma/sd.ma
+```
+
+```{r}
+mean.sum<-rbind(c(mean.dd1, mean.dd), c(mean.ma1, mean.ma))
+sd.sum<-rbind(c(sd.dd1, sd.dd), c(sd.ma1, sd.ma))
+sr.sum<-(mean.sum-0.02/250)/sd.sum
+mean.sum
+sd.sum
+sr.sum
+```
+
+```{r}
+library(xtable)
+mean.sum<-rbind(c(mean.ma), c(mean.dd))
+sd.sum<-rbind(c(sd.ma), c(sd.dd))
+sr.sum<-(mean.sum-0.02/250)/sd.sum
+sum.out<-data.frame(mean.sum[1, ], sd.sum[1, ], sr.sum[1, ], mean.sum[2, ], sd.sum[2, ], sr.sum[2, ])
+rownames(sum.out)<-c(444, 350,300, 250)
+xtable(sum.out, digits=4)
+```
+
+```{r}
+sum.outa<-data.frame(mean.sum[1, ]*250, sd.sum[1, ]*sqrt(250), sr.sum[1, ]*sqrt(250), mean.sum[2, ]*250, sd.sum[2, ]*sqrt(250), sr.sum[2, ]*sqrt(250))
+rownames(sum.outa)<-c(444, 350,300, 250)
+xtable(sum.outa, digits=3)
+```
+
+```{r}
+utility2019<-(sr.sum[2, ]^2-sr.sum[1, ]^2)/sr.sum[1, ]^2*100
+utility2019
+save.image(file="compare19.RData")
+```
+
